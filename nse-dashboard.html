@@ -356,59 +356,93 @@ const S = {
    NSE FETCH — smart proxy chain with HTML detection
 ══════════════════════════════════════════════════════════ */
 async function nseFetch(path) {
+  // NSE requires session cookies — we open NSE in background iframe
+  // to establish session, then fetch the API
   const base = 'https://www.nseindia.com';
-  const full = base + path;
 
-  const tries = [
-    // 1. codetabs — best for NSE bot bypass
+  // Step 1: warm up NSE session via no-cors preflight
+  try {
+    await fetch(base, {mode:'no-cors', credentials:'include', signal: AbortSignal.timeout(5000)});
+  } catch(e) { /* ignore — just warming session */ }
+
+  // Step 2: try direct fetch with credentials (works if NSE session cookie exists)
+  const apiUrl = base + path;
+  const headers = {
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Referer': 'https://www.nseindia.com/option-chain',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 13; 23049PCD8G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36'
+  };
+
+  // Try proxies in order — each one tries to pass session
+  const proxies = [
+    // codetabs — reliable, no HTML wrapping
     async () => {
-      const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${full}`,
-        {signal: AbortSignal.timeout(11000)});
+      const r = await fetch(
+        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(apiUrl)}`,
+        {signal: AbortSignal.timeout(12000)}
+      );
       const t = await r.text();
-      if(t.trim()[0]==='<') throw new Error('HTML');
-      return JSON.parse(t);
+      if (!t || t.trim()[0] === '<') throw new Error('HTML block');
+      const d = JSON.parse(t);
+      if (!d.records && !d.data) throw new Error('no records field');
+      return d;
     },
-    // 2. corsproxy with mobile UA
+    // corsproxy.io
     async () => {
-      const r = await fetch(`https://corsproxy.io/?${encodeURIComponent(full)}`, {
-        signal: AbortSignal.timeout(11000),
-        headers: {'User-Agent':'Mozilla/5.0 (Linux; Android 13; 23049PCD8G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36','Accept':'application/json','Referer':'https://www.nseindia.com/'}
-      });
+      const r = await fetch(
+        `https://corsproxy.io/?${encodeURIComponent(apiUrl)}`,
+        {signal: AbortSignal.timeout(12000), headers}
+      );
       const t = await r.text();
-      if(t.trim()[0]==='<') throw new Error('HTML');
-      return JSON.parse(t);
+      if (!t || t.trim()[0] === '<') throw new Error('HTML block');
+      const d = JSON.parse(t);
+      if (!d.records && !d.data) throw new Error('no records field');
+      return d;
     },
-    // 3. allorigins
+    // allorigins with contents unwrap
     async () => {
-      const r = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(full)}`,
-        {signal: AbortSignal.timeout(11000)});
+      const r = await fetch(
+        `https://api.allorigins.win/get?url=${encodeURIComponent(apiUrl)}&timestamp=${Date.now()}`,
+        {signal: AbortSignal.timeout(12000)}
+      );
       const j = await r.json();
-      if(!j.contents || j.contents.trim()[0]==='<') throw new Error('HTML');
-      return JSON.parse(j.contents);
+      if (!j.contents || j.contents.trim()[0] === '<') throw new Error('HTML block');
+      const d = JSON.parse(j.contents);
+      if (!d.records && !d.data) throw new Error('no records field');
+      return d;
     },
-    // 4. jsonp.afeld.me
+    // workers.dev free CORS proxy
     async () => {
-      const r = await fetch(`https://jsonp.afeld.me/?url=${encodeURIComponent(full)}`,
-        {signal: AbortSignal.timeout(11000)});
+      const r = await fetch(
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(apiUrl)}&timestamp=${Date.now()}`,
+        {signal: AbortSignal.timeout(12000)}
+      );
       const t = await r.text();
-      if(t.trim()[0]==='<') throw new Error('HTML');
-      return JSON.parse(t);
+      if (!t || t.trim()[0] === '<') throw new Error('HTML block');
+      const d = JSON.parse(t);
+      if (!d.records && !d.data) throw new Error('no records field');
+      return d;
     }
   ];
 
   let lastErr = '';
-  for(let i=0;i<tries.length;i++){
-    try{
-      const d = await tries[i]();
-      if(!d) throw new Error('empty');
-      if(!d.records && !d.data) throw new Error('no records');
-      return d;
-    }catch(e){
-      lastErr = `P${i+1}:${e.message}`;
-      console.warn(lastErr);
+  for (let i = 0; i < proxies.length; i++) {
+    try {
+      const data = await proxies[i]();
+      console.log(`✓ Proxy ${i+1} worked for ${path}`);
+      return data;
+    } catch(e) {
+      lastErr = `P${i+1}: ${e.message}`;
+      console.warn(`✗ Proxy ${i+1} failed:`, e.message);
     }
   }
-  throw new Error(lastErr);
+  throw new Error('All proxies failed — ' + lastErr);
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -511,17 +545,37 @@ function startAutoRefresh() {
    MAIN FETCH
 ══════════════════════════════════════════════════════════ */
 async function fetchAll() {
-  setStatus('loading', '⏳ Fetching NSE…');
+  // Check market hours (IST = UTC+5:30)
+  const now = new Date();
+  const istH = (now.getUTCHours() + 5) % 24 + (now.getUTCMinutes() >= 30 ? 0 : 0);
+  const istMin = (now.getUTCMinutes() + 30) % 60;
+  const istHour = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) / 60;
+  const isMarketHours = istHour >= 9.25 && istHour <= 15.5; // 9:15 to 15:30
+
+  if (!isMarketHours) {
+    setStatus('err', '● Market Closed');
+    showToast('⚠ NSE market closed. Data available 9:15 AM – 3:30 PM IST. Showing last available data…');
+  } else {
+    setStatus('loading', '⏳ Fetching NSE…');
+  }
+
   try {
     await fetchOCData();
-    setStatus('live', '● Live — NSE ✓');
-    // VIX optional — don't fail if it errors
+    if (isMarketHours) {
+      setStatus('live', '● Live — NSE ✓');
+    } else {
+      setStatus('err', '● Closing Data');
+    }
     fetchVIX().catch(()=>{});
   } catch(e) {
     const msg = e.message || '';
     setStatus('err', '● NSE Error');
-    showToast('⚠ NSE data failed: ' + msg.slice(0,80) + ' — Retrying in 60s');
-    console.error('fetchAll error:', e);
+    if (isMarketHours) {
+      showToast('⚠ NSE fetch failed: ' + msg.slice(0,60) + ' — Will retry in 60s');
+    } else {
+      showToast('⚠ Market closed + proxy blocked. Try again after 9:15 AM IST tomorrow.');
+    }
+    console.error('fetchAll error:', msg);
   }
 }
 
