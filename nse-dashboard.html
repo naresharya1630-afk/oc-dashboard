@@ -356,6 +356,380 @@ const S = {
    NSE FETCH — smart proxy chain with HTML detection
 ══════════════════════════════════════════════════════════ */
 async function nseFetch(path) {
+  // Use Cloudflare Worker as NSE proxy
+  const WORKER = 'https://nse-proxy.naresharya1630.workers.dev';
+  const workerUrl = `${WORKER}/?path=${encodeURIComponent(path)}`;
+
+  try {
+    const r = await fetch(workerUrl, {
+      signal: AbortSignal.timeout(12000),
+      headers: { 'Accept': 'application/json' }
+    });
+    const txt = await r.text();
+    if (!txt || txt.trim()[0] === '<') throw new Error('NSE returned HTML — market may be closed');
+    const data = JSON.parse(txt);
+    if (!data.records && !data.data) throw new Error('No records in response');
+    return data;
+  } catch(e) {
+    throw new Error(e.message);
+  }
+}en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+<title>Live OC Dashboard — NSE</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d0f14;--bg2:#13161e;--bg3:#1a1e2a;--border:#252a38;
+  --text:#e2e8f0;--muted:#7d8ca3;--bull:#22d07a;--bear:#f04040;
+  --neutral:#f0a020;--accent:#4f8ef7;--accent2:#9b6fff;
+  --ce:rgba(79,142,247,0.10);--pe:rgba(240,64,64,0.10);
+  --atm:rgba(240,160,32,0.20);--r:8px;
+  --font-mono:'Courier New',monospace;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;font-size:14px;overflow-x:hidden}
+.hidden{display:none!important}
+
+/* ── SPLASH ── */
+#splash{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;gap:16px}
+#splash h1{font-size:22px;color:var(--accent);font-weight:700}
+#splash p{color:var(--muted);font-size:13px;text-align:center;max-width:320px;line-height:1.6}
+.splash-logo{font-size:52px}
+.btn-start{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none;border-radius:var(--r);padding:14px 32px;font-size:16px;font-weight:700;cursor:pointer;margin-top:8px}
+.symbol-row{display:flex;gap:10px;margin-top:4px}
+.sym-btn{background:var(--bg3);border:2px solid var(--border);color:var(--text);border-radius:var(--r);padding:10px 24px;font-size:15px;font-weight:600;cursor:pointer;transition:all .2s}
+.sym-btn.active{border-color:var(--accent);color:var(--accent);background:rgba(79,142,247,.12)}
+.expiry-row{display:flex;flex-direction:column;gap:6px;width:100%;max-width:320px}
+.expiry-row label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.expiry-row select{background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);padding:10px 12px;font-size:14px;width:100%}
+.cors-note{background:rgba(240,160,32,.10);border:1px solid rgba(240,160,32,.3);border-radius:var(--r);padding:12px 14px;font-size:12px;color:var(--neutral);max-width:340px;line-height:1.7}
+.cors-note b{color:#fff}
+
+/* ── TOPBAR ── */
+.topbar{display:flex;align-items:center;justify-content:space-between;background:var(--bg2);border-bottom:1px solid var(--border);padding:8px 14px;position:sticky;top:0;z-index:100;flex-wrap:wrap;gap:6px}
+.topbar-left,.topbar-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tb-title{font-weight:700;font-size:14px;color:var(--accent)}
+.tb-badge{font-size:11px;padding:3px 9px;border-radius:20px;background:var(--bg3);border:1px solid var(--border);color:var(--muted)}
+.tb-badge.live{color:var(--bull);border-color:var(--bull)}
+.tb-badge.err{color:var(--bear);border-color:var(--bear)}
+.tb-badge.loading{color:var(--neutral);border-color:var(--neutral)}
+.tb-time{font-family:var(--font-mono);font-size:13px;color:var(--neutral)}
+.btn-sm{background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer}
+.btn-sm.active-sym{border-color:var(--accent);color:var(--accent)}
+.countdown{font-size:11px;color:var(--muted);font-family:var(--font-mono)}
+
+/* ── TICKER ROW ── */
+.ticker-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:7px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--border)}
+.ticker-card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:9px 10px;text-align:center}
+.tc-label{font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:3px}
+.tc-val{font-size:18px;font-weight:700;font-family:var(--font-mono)}
+.tc-sub{font-size:10px;color:var(--muted);margin-top:2px}
+
+/* ── LEVELS ── */
+.levels-row{display:flex;flex-wrap:wrap;gap:5px;padding:7px 12px;background:var(--bg2);border-bottom:1px solid var(--border)}
+.level-item{display:flex;align-items:center;gap:5px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:5px 9px}
+.lvl-label{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.lvl-val{font-size:12px;font-weight:700;font-family:var(--font-mono)}
+.bull{color:var(--bull)}.bear{color:var(--bear)}.neutral{color:var(--neutral)}
+
+/* ── TABS ── */
+.tab-nav{display:flex;gap:0;padding:0 12px;background:var(--bg2);border-bottom:1px solid var(--border);overflow-x:auto}
+.tab-btn{background:transparent;border:none;color:var(--muted);padding:9px 14px;font-size:13px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-panel{padding:10px;display:none}
+.tab-panel.active{display:block}
+
+/* ── OC TABLE ── */
+.oc-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.oc-title{font-weight:700;font-size:14px}
+.oc-sub{font-size:11px;color:var(--muted)}
+.oc-toolbar label{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px}
+.oc-toolbar input{background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:4px 6px;width:50px}
+.oc-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:var(--r);border:1px solid var(--border)}
+.oc-table{width:100%;border-collapse:collapse;font-size:11.5px}
+.oc-table thead{position:sticky;top:0;z-index:5}
+.oc-table th{padding:7px 5px;font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;border-bottom:1px solid var(--border)}
+.ce-hdr{background:rgba(79,142,247,.15);color:var(--accent);text-align:right}
+.pe-hdr{background:rgba(240,64,64,.15);color:var(--bear);text-align:left}
+.sk-hdr{background:var(--bg3);color:var(--neutral);text-align:center}
+.oc-table td{padding:5px 5px;border-bottom:1px solid rgba(255,255,255,.04);font-family:var(--font-mono);white-space:nowrap}
+.ce-c{background:var(--ce);text-align:right}
+.pe-c{background:var(--pe);text-align:left}
+.sk-c{background:var(--bg3);text-align:center;font-weight:700;color:var(--neutral);font-size:12.5px;border-left:1px solid var(--border);border-right:1px solid var(--border)}
+.atm-row td{background:var(--atm)!important}
+.atm-row .sk-c{color:#fff}
+.oc-load{text-align:center;color:var(--muted);padding:32px;font-size:13px}
+.up{color:var(--bull)}.down{color:var(--bear)}
+.oi-bar{display:flex;align-items:center;gap:3px}
+.oi-inner{height:3px;border-radius:2px;flex-shrink:0;min-width:2px}
+
+/* ── INDICATORS ── */
+.ind-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin-bottom:12px}
+.ind-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px}
+.ind-title{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--accent);margin-bottom:8px;font-weight:600}
+.ind-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:12.5px}
+.ind-row:last-child{border-bottom:none}
+.ind-row span:first-child{color:var(--muted)}
+.ind-row span:last-child{font-family:var(--font-mono);font-weight:600}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700;background:var(--bg3);border:1px solid var(--border);text-transform:uppercase}
+.badge-lg{font-size:14px;padding:4px 14px}
+.badge-bull{background:rgba(34,208,122,.15);color:var(--bull);border-color:var(--bull)}
+.badge-bear{background:rgba(240,64,64,.15);color:var(--bear);border-color:var(--bear)}
+.badge-neutral{background:rgba(240,160,32,.15);color:var(--neutral);border-color:var(--neutral)}
+
+/* ── SIGNAL HIST ── */
+.sh-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
+.sh-title{padding:9px 13px;font-size:12px;font-weight:600;border-bottom:1px solid var(--border);color:var(--accent)}
+.sh-table{width:100%;border-collapse:collapse;font-size:11.5px}
+.sh-table th{padding:7px 9px;background:var(--bg3);font-size:9.5px;text-transform:uppercase;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)}
+.sh-table td{padding:6px 9px;border-bottom:1px solid rgba(255,255,255,.04);font-family:var(--font-mono)}
+
+/* ── CHART ── */
+.chart-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:10px}
+
+/* ── FII ── */
+.fii-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-bottom:12px}
+.fii-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px;text-align:center}
+.fii-label{font-size:9px;color:var(--muted);text-transform:uppercase;margin-bottom:5px}
+.fii-val{font-size:16px;font-weight:700;font-family:var(--font-mono)}
+.fii-inp-row{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px}
+.fii-inp-row input{background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);padding:7px 9px;font-size:13px;width:105px}
+
+/* ── ERROR TOAST ── */
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1e2030;border:1px solid var(--bear);color:var(--text);padding:10px 18px;border-radius:var(--r);font-size:13px;z-index:9999;display:none;max-width:90vw;text-align:center}
+
+@media(max-width:600px){.ticker-row{grid-template-columns:repeat(3,1fr)}.tc-val{font-size:15px}.oc-table td,.oc-table th{font-size:10.5px;padding:4px 3px}}
+::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+</style>
+</head>
+<body>
+
+<!-- SPLASH SCREEN -->
+<div id="splash">
+  <div class="splash-logo">📊</div>
+  <h1>Live OC Dashboard</h1>
+  <p style="color:var(--muted);font-size:13px">NSE Real-time Option Chain</p>
+
+  <div class="symbol-row">
+    <button class="sym-btn active" id="sb-bn" onclick="selectSym('BANKNIFTY')">BankNifty</button>
+    <button class="sym-btn" id="sb-n" onclick="selectSym('NIFTY')">Nifty</button>
+  </div>
+
+  <div class="expiry-row">
+    <label>Select Expiry</label>
+    <select id="sel-expiry"><option value="">-- Loading expiries… --</option></select>
+  </div>
+
+  <div class="cors-note">
+    ⚠️ <b>Ek baar Chrome setting:</b><br>
+    Chrome address bar mein jao →<br>
+    <b>chrome://flags</b> → search karo<br>
+    <b>"Block insecure"</b> → <b>Disabled</b> karo<br>
+    Ya neeche wala button dabao — NSE directly open hoga aur data aayega.
+  </div>
+
+  <button class="btn-start" onclick="startDashboard()">🚀 Start Live Dashboard</button>
+  <p style="font-size:11px;color:var(--muted)">NSE se free live data • Koi token nahi chahiye</p>
+</div>
+
+<!-- MAIN DASHBOARD -->
+<div id="dash" class="hidden">
+  <div id="toast"></div>
+
+  <header class="topbar">
+    <div class="topbar-left">
+      <span style="font-size:18px">📊</span>
+      <span class="tb-title" id="tb-sym">—</span>
+      <span class="tb-badge" id="tb-status">● Loading…</span>
+    </div>
+    <div class="topbar-right">
+      <span class="tb-time" id="live-time">--:--:--</span>
+      <span class="countdown" id="countdown">Next: 60s</span>
+      <button class="btn-sm" id="btn-bn" onclick="switchSym('BANKNIFTY')">BN</button>
+      <button class="btn-sm" id="btn-n" onclick="switchSym('NIFTY')">NF</button>
+      <button class="btn-sm" onclick="forceRefresh()">↻</button>
+      <button class="btn-sm" style="color:var(--bear)" onclick="goBack()">✕</button>
+    </div>
+  </header>
+
+  <section class="ticker-row">
+    <div class="ticker-card"><div class="tc-label">SPOT</div><div class="tc-val" id="v-spot">—</div><div class="tc-sub" id="s-spot">—</div></div>
+    <div class="ticker-card"><div class="tc-label">India VIX</div><div class="tc-val" id="v-vix">—</div><div class="tc-sub" id="s-vix">—</div></div>
+    <div class="ticker-card"><div class="tc-label">PCR (OI)</div><div class="tc-val" id="v-pcr">—</div><div class="tc-sub">Bull&gt;1 Bear&lt;1</div></div>
+    <div class="ticker-card"><div class="tc-label">Max Pain</div><div class="tc-val" id="v-mp">—</div><div class="tc-sub" id="s-mp">—</div></div>
+    <div class="ticker-card" id="tc-trend"><div class="tc-label">Trend</div><div class="tc-val" id="v-trend">—</div><div class="tc-sub" id="s-trend">—</div></div>
+    <div class="ticker-card" id="tc-sig"><div class="tc-label">Signal</div><div class="tc-val" id="v-sig">—</div><div class="tc-sub" id="s-sig">—</div></div>
+  </section>
+
+  <section class="levels-row">
+    <div class="level-item"><span class="lvl-label">R1</span><span class="lvl-val bull" id="l-r1">—</span></div>
+    <div class="level-item"><span class="lvl-label">3R</span><span class="lvl-val bull" id="l-r2">—</span></div>
+    <div class="level-item"><span class="lvl-label">VWAP</span><span class="lvl-val neutral" id="l-vwap">—</span></div>
+    <div class="level-item"><span class="lvl-label">S1</span><span class="lvl-val bear" id="l-s1">—</span></div>
+    <div class="level-item"><span class="lvl-label">3S</span><span class="lvl-val bear" id="l-s2">—</span></div>
+    <div class="level-item"><span class="lvl-label">ATM</span><span class="lvl-val neutral" id="l-atm">—</span></div>
+    <div class="level-item"><span class="lvl-label">OI Diff</span><span class="lvl-val neutral" id="l-oidiff">—</span></div>
+    <div class="level-item"><span class="lvl-label">Strength</span><span class="lvl-val neutral" id="l-str">—</span></div>
+  </section>
+
+  <nav class="tab-nav">
+    <button class="tab-btn active" onclick="showTab('t-oc')">Option Chain</button>
+    <button class="tab-btn" onclick="showTab('t-ind')">Indicators</button>
+    <button class="tab-btn" onclick="showTab('t-chart')">PCR Chart</button>
+    <button class="tab-btn" onclick="showTab('t-fii')">FII/DII</button>
+  </nav>
+
+  <!-- OC TAB -->
+  <section id="t-oc" class="tab-panel active">
+    <div class="oc-toolbar">
+      <span class="oc-title">Live Option Chain — <span id="oc-sym">—</span></span>
+      <span class="oc-sub">Expiry: <span id="oc-exp">—</span></span>
+      <label>±<input id="oc-range" type="number" value="10" min="5" max="25" onchange="renderOC()"/></label>
+    </div>
+    <div class="oc-wrap">
+      <table class="oc-table">
+        <thead><tr>
+          <th class="ce-hdr">CE Vol</th><th class="ce-hdr">CE COI</th><th class="ce-hdr">CE OI</th>
+          <th class="ce-hdr">CE IV</th><th class="ce-hdr">CE LTP</th><th class="ce-hdr">Chg</th>
+          <th class="sk-hdr">Strike</th>
+          <th class="pe-hdr">Chg</th><th class="pe-hdr">PE LTP</th><th class="pe-hdr">PE IV</th>
+          <th class="pe-hdr">PE OI</th><th class="pe-hdr">PE COI</th><th class="pe-hdr">PE Vol</th>
+        </tr></thead>
+        <tbody id="oc-body"><tr><td colspan="13" class="oc-load">⏳ Fetching NSE data…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- INDICATORS TAB -->
+  <section id="t-ind" class="tab-panel hidden">
+    <div class="ind-grid">
+      <div class="ind-card">
+        <div class="ind-title">PCR Analysis</div>
+        <div class="ind-row"><span>Total CE OI</span><span id="i-ceoi">—</span></div>
+        <div class="ind-row"><span>Total PE OI</span><span id="i-peoi">—</span></div>
+        <div class="ind-row"><span>PCR (OI)</span><span id="i-pcr">—</span></div>
+        <div class="ind-row"><span>PCR Signal</span><span id="i-pcrsig" class="badge">—</span></div>
+        <div class="ind-row"><span>CE Vol</span><span id="i-cevol">—</span></div>
+        <div class="ind-row"><span>PE Vol</span><span id="i-pevol">—</span></div>
+        <div class="ind-row"><span>Vol PCR</span><span id="i-vpcr">—</span></div>
+      </div>
+      <div class="ind-card">
+        <div class="ind-title">OI Change (COI)</div>
+        <div class="ind-row"><span>CE COI Total</span><span id="i-cecoi">—</span></div>
+        <div class="ind-row"><span>PE COI Total</span><span id="i-pecoi">—</span></div>
+        <div class="ind-row"><span>Diff (PE−CE)</span><span id="i-coidiff">—</span></div>
+        <div class="ind-row"><span>COI Signal</span><span id="i-coisig" class="badge">—</span></div>
+        <div class="ind-row"><span>Max CE OI Strike</span><span id="i-maxce">—</span></div>
+        <div class="ind-row"><span>Max PE OI Strike</span><span id="i-maxpe">—</span></div>
+        <div class="ind-row"><span>Max Pain</span><span id="i-mp2">—</span></div>
+      </div>
+      <div class="ind-card">
+        <div class="ind-title">VIX Analysis</div>
+        <div class="ind-row"><span>India VIX</span><span id="i-vix">—</span></div>
+        <div class="ind-row"><span>Category</span><span id="i-vixcat" class="badge">—</span></div>
+        <div class="ind-row"><span>Exp Daily Move</span><span id="i-expm">—</span></div>
+        <div class="ind-row"><span>Exp Weekly Move</span><span id="i-expw">—</span></div>
+        <div class="ind-row"><span>VIX Signal</span><span id="i-vixsig" class="badge">—</span></div>
+      </div>
+      <div class="ind-card">
+        <div class="ind-title">Trend & Strength</div>
+        <div class="ind-row"><span>Trend</span><span id="i-trend" class="badge">—</span></div>
+        <div class="ind-row"><span>Strength</span><span id="i-str">—</span></div>
+        <div class="ind-row"><span>R1 Resistance</span><span id="i-r1">—</span></div>
+        <div class="ind-row"><span>S1 Support</span><span id="i-s1">—</span></div>
+        <div class="ind-row"><span>3R Level</span><span id="i-r2">—</span></div>
+        <div class="ind-row"><span>3S Level</span><span id="i-s2">—</span></div>
+        <div class="ind-row"><span>VWAP (approx)</span><span id="i-vwap">—</span></div>
+      </div>
+      <div class="ind-card">
+        <div class="ind-title">Signal Engine</div>
+        <div class="ind-row"><span>Primary Signal</span><span id="i-sig1" class="badge badge-lg">—</span></div>
+        <div class="ind-row"><span>Confirmation</span><span id="i-sig2" class="badge">—</span></div>
+        <div class="ind-row"><span>Reversal Alert</span><span id="i-rev">—</span></div>
+        <div class="ind-row"><span>Bull Strength</span><span id="i-bull">—</span></div>
+        <div class="ind-row"><span>Bear Strength</span><span id="i-bear">—</span></div>
+        <div class="ind-row"><span>CE Writers Active</span><span id="i-cew">—</span></div>
+        <div class="ind-row"><span>PE Writers Active</span><span id="i-pew">—</span></div>
+      </div>
+      <div class="ind-card">
+        <div class="ind-title">BS Greeks (ATM CE)</div>
+        <div class="ind-row"><span>Delta</span><span id="i-delta">—</span></div>
+        <div class="ind-row"><span>Gamma</span><span id="i-gamma">—</span></div>
+        <div class="ind-row"><span>Theta/day</span><span id="i-theta">—</span></div>
+        <div class="ind-row"><span>Vega</span><span id="i-vega">—</span></div>
+        <div class="ind-row"><span>ATM CE IV</span><span id="i-ceiv">—</span></div>
+        <div class="ind-row"><span>ATM PE IV</span><span id="i-peiv">—</span></div>
+        <div class="ind-row"><span>DTE</span><span id="i-dte">—</span></div>
+      </div>
+    </div>
+    <div class="sh-wrap">
+      <div class="sh-title">📋 Signal History</div>
+      <table class="sh-table">
+        <thead><tr><th>Time</th><th>Spot</th><th>Signal</th><th>PCR</th><th>Trend</th><th>Confirm</th></tr></thead>
+        <tbody id="sh-body"><tr><td colspan="6" style="text-align:center;color:#555;padding:16px">No signals yet…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- CHART TAB -->
+  <section id="t-chart" class="tab-panel hidden">
+    <div class="chart-wrap"><canvas id="pcrChart" height="100"></canvas></div>
+    <div class="chart-wrap"><canvas id="oiChart" height="100"></canvas></div>
+  </section>
+
+  <!-- FII/DII TAB -->
+  <section id="t-fii" class="tab-panel hidden">
+    <p style="color:var(--muted);font-size:12px;margin-bottom:10px">NSE se aaj ka FII/DII data manually enter karo (₹ Crore):</p>
+    <div class="fii-inp-row">
+      <input id="fi-fb" type="number" placeholder="FII Buy"/>
+      <input id="fi-fs" type="number" placeholder="FII Sell"/>
+      <input id="fi-db" type="number" placeholder="DII Buy"/>
+      <input id="fi-ds" type="number" placeholder="DII Sell"/>
+      <button class="btn-sm" style="padding:8px 16px" onclick="setFII()">Set</button>
+    </div>
+    <div class="fii-grid">
+      <div class="fii-card"><div class="fii-label">FII Net</div><div class="fii-val" id="f-fnet">—</div></div>
+      <div class="fii-card"><div class="fii-label">DII Net</div><div class="fii-val" id="f-dnet">—</div></div>
+      <div class="fii-card"><div class="fii-label">FII Buy</div><div class="fii-val" id="f-fb">—</div></div>
+      <div class="fii-card"><div class="fii-label">FII Sell</div><div class="fii-val" id="f-fs">—</div></div>
+      <div class="fii-card"><div class="fii-label">DII Buy</div><div class="fii-val" id="f-db">—</div></div>
+      <div class="fii-card"><div class="fii-label">DII Sell</div><div class="fii-val" id="f-ds">—</div></div>
+    </div>
+  </section>
+</div>
+
+<script>
+'use strict';
+
+/* ══════════════════════════════════════════════════════════
+   STATE
+══════════════════════════════════════════════════════════ */
+const S = {
+  sym: 'BANKNIFTY',
+  expiry: '',
+  expiryList: [],
+  spot: 0, prevSpot: 0,
+  vix: 0,
+  atm: 0,
+  ocData: [],
+  pcrHist: [],
+  sigHist: [],
+  pcrChartObj: null,
+  oiChartObj: null,
+  refreshTimer: null,
+  countdownTimer: null,
+  countdownVal: 60,
+  vwap: 0,
+  SLAB: { BANKNIFTY: 100, NIFTY: 50 },
+  RF: 0.10
+};
+
+/* ══════════════════════════════════════════════════════════
+   NSE FETCH — smart proxy chain with HTML detection
+══════════════════════════════════════════════════════════ */
+async function nseFetch(path) {
   // NSE requires session cookies — we open NSE in background iframe
   // to establish session, then fetch the API
   const base = 'https://www.nseindia.com';
