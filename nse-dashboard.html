@@ -353,42 +353,58 @@ const S = {
 };
 
 /* ══════════════════════════════════════════════════════════
-   NSE API URLS — using allorigins CORS proxy (free)
-   Primary: allorigins.win
-   Fallback: corsproxy.io
+   NSE FETCH — 5 proxy chain, auto-fallback
 ══════════════════════════════════════════════════════════ */
-function nseUrl(path) {
-  const base = 'https://www.nseindia.com' + path;
-  // allorigins wraps response in {contents: "..."}
-  return `https://api.allorigins.win/get?url=${encodeURIComponent(base)}`;
-}
 
-function nseUrlFallback(path) {
-  const base = 'https://www.nseindia.com' + path;
-  return `https://corsproxy.io/?${encodeURIComponent(base)}`;
-}
+// Each proxy has different response format — handled below
+const PROXIES = [
+  {
+    name: 'thingproxy',
+    url: path => `https://thingproxy.freeboard.io/fetch/https://www.nseindia.com${path}`,
+    parse: async r => await r.json()
+  },
+  {
+    name: 'allorigins',
+    url: path => `https://api.allorigins.win/get?url=${encodeURIComponent('https://www.nseindia.com'+path)}`,
+    parse: async r => { const j=await r.json(); return JSON.parse(j.contents); }
+  },
+  {
+    name: 'corsproxy.io',
+    url: path => `https://corsproxy.io/?${encodeURIComponent('https://www.nseindia.com'+path)}`,
+    parse: async r => await r.json()
+  },
+  {
+    name: 'cors.sh',
+    url: path => `https://proxy.cors.sh/https://www.nseindia.com${path}`,
+    parse: async r => await r.json()
+  },
+  {
+    name: 'htmldriven',
+    url: path => `https://cors-proxy.htmldriven.com/?url=${encodeURIComponent('https://www.nseindia.com'+path)}`,
+    parse: async r => { const j=await r.json(); return typeof j.body==='string'?JSON.parse(j.body):j; }
+  }
+];
 
-/* ══════════════════════════════════════════════════════════
-   FETCH WITH FALLBACK
-══════════════════════════════════════════════════════════ */
 async function nseFetch(path) {
-  // Try allorigins first
-  try {
-    const r = await fetch(nseUrl(path), { signal: AbortSignal.timeout(8000) });
-    const j = await r.json();
-    // allorigins wraps in {contents}
-    if (j.contents) return JSON.parse(j.contents);
-    if (j.data) return j;
-    throw new Error('empty');
-  } catch(e) {
-    // Fallback: corsproxy.io (direct JSON)
+  let lastErr = '';
+  for (const proxy of PROXIES) {
     try {
-      const r2 = await fetch(nseUrlFallback(path), { signal: AbortSignal.timeout(8000) });
-      return await r2.json();
-    } catch(e2) {
-      throw new Error('Both proxies failed: ' + e2.message);
+      const r = await fetch(proxy.url(path), {
+        signal: AbortSignal.timeout(9000),
+        headers: { 'x-requested-with': 'XMLHttpRequest' }
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await proxy.parse(r);
+      if (!data) throw new Error('empty response');
+      // Mark this proxy as working for next call
+      S._workingProxy = proxy.name;
+      return data;
+    } catch(e) {
+      lastErr = `[${proxy.name}] ${e.message}`;
+      console.warn('Proxy failed:', lastErr);
     }
   }
+  throw new Error('All proxies failed. Last: ' + lastErr);
 }
 
 /* ══════════════════════════════════════════════════════════
