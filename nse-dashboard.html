@@ -824,22 +824,28 @@ async function nseFetch(path) {
 ══════════════════════════════════════════════════════════ */
 async function loadExpiries() {
   const sel = document.getElementById('sel-expiry');
+  // Set default expiry first so Start button always works
+  const d = new Date(), day = d.getDay();
+  let ahead = (4-day+7)%7; if(ahead===0) ahead=7;
+  d.setDate(d.getDate()+ahead);
+  const defaultExp = d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}).replace(/ /g,'-');
+  S.expiry = defaultExp;
+  sel.innerHTML = `<option value="${defaultExp}">${defaultExp} (default)</option>`;
+
   try {
     const sym = S.sym === 'BANKNIFTY' ? 'BANKNIFTY' : 'NIFTY';
     const data = await nseFetch(`/api/option-chain-indices?symbol=${sym}`);
     const expiries = data?.records?.expiryDates || [];
-    S.expiryList = expiries;
-    sel.innerHTML = expiries.map((e,i) =>
-      `<option value="${e}" ${i===0?'selected':''}>${e}</option>`
-    ).join('');
-    if (expiries.length > 0) S.expiry = expiries[0];
+    if (expiries.length > 0) {
+      S.expiryList = expiries;
+      S.expiry = expiries[0];
+      sel.innerHTML = expiries.map((e,i) =>
+        `<option value="${e}" ${i===0?'selected':''}>${e}</option>`
+      ).join('');
+    }
   } catch(e) {
-    sel.innerHTML = '<option value="">Could not load — will use nearest expiry</option>';
-    // Set nearest Thursday as fallback
-    const d = new Date(), day = d.getDay();
-    let ahead = (4-day+7)%7; if(ahead===0) ahead=7;
-    d.setDate(d.getDate()+ahead);
-    S.expiry = d.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}).replace(/ /g,'-');
+    // Keep default — start button still works
+    console.warn('Expiry load failed, using default:', defaultExp);
   }
 }
 
@@ -855,7 +861,15 @@ function selectSym(sym) {
 ══════════════════════════════════════════════════════════ */
 function startDashboard() {
   const sel = document.getElementById('sel-expiry');
-  if (sel.value) S.expiry = sel.value;
+  if (sel && sel.value) {
+    S.expiry = sel.value;
+  } else {
+    // Default: nearest Thursday
+    const d = new Date(), day = d.getDay();
+    let ahead = (4-day+7)%7; if(ahead===0) ahead=7;
+    d.setDate(d.getDate()+ahead);
+    S.expiry = d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}).replace(/ /g,'-');
+  }
   document.getElementById('splash').classList.add('hidden');
   document.getElementById('dash').classList.remove('hidden');
   document.getElementById('tb-sym').textContent = S.sym;
